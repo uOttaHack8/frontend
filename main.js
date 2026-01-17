@@ -21,3 +21,44 @@ setInterval(() => {
   ambulanceMarker.setLatLng(path[i]);
   i = (i + 1) % path.length;
 }, 1000);
+
+
+// ------------------------------
+// Fetch the red light camera data
+// ------------------------------
+fetch('https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(`
+[out:json][timeout:60];
+area["name"="Ottawa"]->.searchArea;
+way
+  ["highway"~"^(trunk|primary|secondary|tertiary|unclassified|residential)$"]
+  (area.searchArea)->.roads;
+node
+  (roads)
+  (if:count(ways) > 1);
+out;
+`))
+  .then(res => res.json())
+  .then(osmData => {
+    const nodes = osmData.elements.slice(0, 50); // first 50 intersections
+
+    const lightIcons = {
+      RED: L.icon({ iconUrl: 'icons/redLight.png', iconSize: [10, 10] }),
+      GREEN: L.icon({ iconUrl: 'icons/greenLight.png', iconSize: [10, 10] })
+    };
+
+    nodes.forEach(node => {
+      const lat = node.lat;
+      const lng = node.lon;
+      const offset = 0.00015;
+
+      const lights = {
+        N: L.marker([lat + offset, lng - offset / 1.5], { icon: lightIcons.RED }).addTo(map),
+        S: L.marker([lat - offset, lng + offset / 1.5], { icon: lightIcons.RED }).addTo(map),
+        E: L.marker([lat + offset / 3, lng + offset], { icon: lightIcons.GREEN }).addTo(map),
+        W: L.marker([lat - offset / 3, lng - offset], { icon: lightIcons.GREEN }).addTo(map),
+      };
+
+      node.lights = lights;
+    });
+  })
+  .catch(err => console.error('Failed to load OSM intersections:', err));
