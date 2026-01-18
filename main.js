@@ -1,56 +1,91 @@
-// main.js
+// MQTT setup
+const MQTT_URL = 'ws://localhost:8000';
+const TOPICS = {
+    reqStart: 'gw/req/start',
+    resRoute: 'gw/res/route',
+    resIntersections: 'gw/res/intersections',
+    dataAmb: 'gw/data/amb',
+    ctlSignal: 'gw/ctl/signal',
+    dataVolume: 'gw/data/volume',
+    cfgSmart: 'gw/cfg/smart',
+    cfgTraffic: 'gw/cfg/traffic',
+    err: 'gw/err'
+};
 
-// ==========================================
-// 1. CONFIGURATION
-// ==========================================
+let mqttClient = null;
+
+try {
+    mqttClient = mqtt.connect(MQTT_URL);
+    mqttClient.on('connect', () => {
+        console.log("Connected to Solace/MQTT");
+        mqttClient.subscribe(TOPICS.resRoute);
+        mqttClient.subscribe(TOPICS.resIntersections);
+        mqttClient.subscribe(TOPICS.dataAmb);
+        mqttClient.subscribe(TOPICS.ctlSignal);
+        mqttClient.subscribe(TOPICS.dataVolume);
+        mqttClient.subscribe(TOPICS.err);
+    });
+
+    mqttClient.on('message', (topic, msg) => {
+        const data = JSON.parse(msg.toString());
+        if (topic === TOPICS.resRoute) handleRouteResponse(data);
+        if (topic === TOPICS.resIntersections) handleIntersectionUpdate(data);
+        if (topic === TOPICS.dataAmb) handleAmbulanceUpdate(data);
+        if (topic === TOPICS.ctlSignal) handleSignalUpdate(data);
+        if (topic === TOPICS.dataVolume) handleVolumeUpdate(data);
+        if (topic === TOPICS.err) handleError(data);
+    });
+} catch (e) {
+    console.error("MQTT Error. Make sure mqtt.min.js is included.", e);
+}
+
+// Configuration
 const CONFIG = {
     debug: true,
     
-    // --- SPEEDS (m/s) ---
-    // 1 m/s = 3.6 km/h
-    roamSpeed: 14,        // ~50 km/h (Cruising)
-    ambSpeedHigh: 33,     // ~120 km/h (Smart City ON)
-    ambSpeedLow: 10,      // ~36 km/h (Smart City OFF - Traffic delays)
-    ambAccel: 15.0,       // Acceleration factor
+    // speeds in m/s
+    // 1 m/s equals 3.6 km/h
+    roamSpeed: 13.9,      // approx 50 km/h cruising
+    ambSpeedHigh: 33.3,   // approx 120 km/h emergency
+    ambSpeedLow: 10,      // approx 36 km/h smart city off
+    ambAccel: 15.0,       // acceleration factor
     
-    // --- TRAFFIC ---
+    // Traffic
     carSpeed: 14,         
     carClearSpeed: 30,    
     carSpacing: 22,       
     bumperDist: 14,       
     maxCarsPerQueue: 5,   
     
-    // --- SMART SYSTEM ---
-    greenHoldTime: 10000, 
-    lookAheadTime: 15,    // Trigger lights 15s away based on current speed
-    scanRadius: 100,      
-    lookAheadTime: 10,    // Trigger lights 10s away based on current speed
+    // Smart system
+    greenHoldTime: 25000, 
+    lookAheadTime: 10,    // trigger lights 10s away based on current speed
     scanRadius: 20,      
     stopLineDist: 30      
 };
 
-// ==========================================
-// 2. GLOBAL STATE
-// ==========================================
+// Global state
 let smartCityEnabled = true; 
-let systemState = 'IDLE';    // IDLE, ROAMING, EMERGENCY, ARRIVED
-let isRouting = false;
+let maxTrafficEnabled = false;
+let systemState = 'IDLE';    // system states
 let startTime = 0;
 let timerInterval = null;
+let previousRunTime = null;
+let routeHistory = [];
 let lastTime = 0;
 
-// Camera
+// camera
 let cameraLocked = true;
 
-// Replay Memory
+// replay memory
 let lastStart = null;
 let lastEnd = null;
 
-// Data
+// data
 let intersections = [];
 let routePath = [];
 
-// Hero State
+// hero state
 let heroState = { 
     dist: 0, 
     speed: 0, 
@@ -59,20 +94,19 @@ let heroState = {
     currentIndex: 0 
 };
 
-// Visual Handles
+// visual handles
 let currentRouteLine = null;
+let beepMarker = null;
 let crashMarker = null;
 
-// ==========================================
-// 3. MAP SETUP
-// ==========================================
+// Map setup
 
 const SAFE_START = { lat: 45.4215, lng: -75.6974 }; 
 
 const map = L.map('map', { 
     zoomControl: true, 
     renderer: L.canvas() 
-}).setView([SAFE_START.lat, SAFE_START.lng], 17); // Initial Zoom
+}).setView([SAFE_START.lat, SAFE_START.lng], 17); // initial zoom
 
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
     attribution: '&copy; CartoDB',
@@ -80,9 +114,9 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
     subdomains: 'abcd'
 }).addTo(map);
 
-// --- Camera Interaction ---
+// Camera interaction
 map.on('dragstart', () => {
-    // Fix: Allow unlocking camera in any state
+    // allow unlocking camera in any state
     if (cameraLocked) {
         cameraLocked = false;
         const btn = document.getElementById('recenter-btn');
@@ -90,18 +124,18 @@ map.on('dragstart', () => {
     }
 });
 
-// --- Custom Panes ---
+// Custom panes
 map.createPane('routePane'); map.getPane('routePane').style.zIndex = 400;
 map.createPane('vehiclePane'); map.getPane('vehiclePane').style.zIndex = 600;
 map.createPane('crashPane'); map.getPane('crashPane').style.zIndex = 2000;
 map.createPane('heroPane'); map.getPane('heroPane').style.zIndex = 3000;
 
-// --- Layer Groups ---
+// Layer groups
 const routeLayerGroup = L.layerGroup().addTo(map);
 const vehicleLayerGroup = L.layerGroup().addTo(map);
 const visualLayerGroup = L.layerGroup().addTo(map); 
 
-// --- Assets ---
+// Assets
 const heroIcon = L.icon({ 
     iconUrl: 'icons/ambulance.png', 
     iconSize: [60, 60], iconAnchor: [30, 30], className: 'hero-marker'
@@ -110,6 +144,11 @@ const heroIcon = L.icon({
 const crashIcon = L.divIcon({ 
     className: 'crash-marker', 
     html: '<div class="crash-inner">💥</div>', iconSize: [80, 80], iconAnchor: [40, 60] 
+});
+
+const beepIcon = L.divIcon({
+    className: 'beep-marker',
+    iconSize: [60, 60], iconAnchor: [30, 30]
 });
 
 const createSignalIcon = (color, rotation) => {
@@ -125,23 +164,6 @@ const trafficStyle = { radius: 5, fillColor: "#ccc", color: "#000", weight: 1, o
 const heroMarker = L.marker([SAFE_START.lat, SAFE_START.lng], { icon: heroIcon, pane: 'heroPane' }).addTo(map);
 
 
-// ==========================================
-// 4. UTILS
-// ==========================================
-
-async function fetchJSON(url) {
-    try {
-        const controller = new AbortController();
-        setTimeout(() => controller.abort(), 30000); 
-        const res = await fetch(url, { signal: controller.signal });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return await res.json();
-    } catch (e) {
-        console.warn("API Fail:", e.message);
-        return null;
-    }
-}
-
 function getDistance(lat1, lon1, lat2, lon2) {
     const R = 6371e3;
     const a = 0.5 - Math.cos((lat2-lat1)*Math.PI/180)/2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*(1-Math.cos((lon2-lon1)*Math.PI/180))/2;
@@ -150,60 +172,35 @@ function getDistance(lat1, lon1, lat2, lon2) {
 
 function destinationPoint(lat, lng, dist, bearing) {
     const R = 6371e3;
-    const φ1 = lat*Math.PI/180, λ1 = lng*Math.PI/180;
-    const φ2 = Math.asin(Math.sin(φ1)*Math.cos(dist/R) + Math.cos(φ1)*Math.sin(dist/R)*Math.cos(bearing));
-    const λ2 = λ1 + Math.atan2(Math.sin(bearing)*Math.sin(dist/R)*Math.cos(φ1), Math.cos(dist/R)-Math.sin(φ1)*Math.sin(φ2));
-    return { lat: φ2*180/Math.PI, lng: λ2*180/Math.PI };
+    const lat1Rad = lat * Math.PI / 180;
+    const lng1Rad = lng * Math.PI / 180;
+    const lat2Rad = Math.asin(Math.sin(lat1Rad) * Math.cos(dist / R) + Math.cos(lat1Rad) * Math.sin(dist / R) * Math.cos(bearing));
+    const lng2Rad = lng1Rad + Math.atan2(Math.sin(bearing) * Math.sin(dist / R) * Math.cos(lat1Rad), Math.cos(dist / R) - Math.sin(lat1Rad) * Math.sin(lat2Rad));
+    return { lat: lat2Rad * 180 / Math.PI, lng: lng2Rad * 180 / Math.PI };
 }
 
 function getBearing(start, end) {
-    const φ1 = start.lat*Math.PI/180, φ2 = end.lat*Math.PI/180;
-    const Δλ = (end.lng-start.lng)*Math.PI/180;
-    const y = Math.sin(Δλ)*Math.cos(φ2);
-    const x = Math.cos(φ1)*Math.sin(φ2) - Math.sin(φ1)*Math.cos(φ2)*Math.cos(Δλ);
-    return Math.atan2(y, x)*180/Math.PI; 
-}
-
-function getPosFromDist(d) {
-    if (!routePath || routePath.length < 2) return null;
-    for(let i=0; i<routePath.length-1; i++) {
-        if(d >= routePath[i].totalDist && d <= routePath[i+1].totalDist) {
-            const r = (d - routePath[i].totalDist) / (routePath[i+1].totalDist - routePath[i].totalDist);
-            return {
-                lat: routePath[i].lat + (routePath[i+1].lat - routePath[i].lat)*r,
-                lng: routePath[i].lng + (routePath[i+1].lng - routePath[i].lng)*r,
-                index: i 
-            };
-        }
-    }
-    return null;
-}
-
-function isValidCoord(lat, lng) {
-    return (lat && lng && lat !== 0 && lng !== 0 && !isNaN(lat) && !isNaN(lng));
+    const lat1Rad = start.lat * Math.PI / 180;
+    const lat2Rad = end.lat * Math.PI / 180;
+    const deltaLng = (end.lng - start.lng) * Math.PI / 180;
+    const y = Math.sin(deltaLng) * Math.cos(lat2Rad);
+    const x = Math.cos(lat1Rad) * Math.sin(lat2Rad) - Math.sin(lat1Rad) * Math.cos(lat2Rad) * Math.cos(deltaLng);
+    return Math.atan2(y, x) * 180 / Math.PI; 
 }
 
 async function getValidRoadPoint() {
     const bounds = { minLat: 45.4100, maxLat: 45.4300, minLng: -75.7100, maxLng: -75.6800 };
     for(let i=0; i<5; i++) {
-        const lat = bounds.minLat + Math.random() * (bounds.maxLat - bounds.minLat);
-        const lng = bounds.minLng + Math.random() * (bounds.maxLng - bounds.minLng);
-        const url = `http://127.0.0.1:5000/nearest/v1/driving/${lng},${lat}?number=1`;
-        const data = await fetchJSON(url);
-        if (data && data.waypoints && data.waypoints.length > 0) {
-            const snapped = data.waypoints[0].location; 
-            if(isValidCoord(snapped[1], snapped[0])) {
-                const dist = getDistance(lat, lng, snapped[1], snapped[0]);
-                if (dist < 50) return { lat: snapped[1], lng: snapped[0] }; 
-            }
-        }
+        // simplified for demo just pick random points in bounding box
+        return { 
+            lat: bounds.minLat + Math.random() * (bounds.maxLat - bounds.minLat),
+            lng: bounds.minLng + Math.random() * (bounds.maxLng - bounds.minLng)
+        };
     }
     return { lat: SAFE_START.lat + 0.005, lng: SAFE_START.lng + 0.005 }; 
 }
 
-// ==========================================
-// 5. TRAFFIC CLASSES
-// ==========================================
+// Traffic classes
 
 class Vehicle {
     constructor(lat, lng, type, node) {
@@ -211,7 +208,7 @@ class Vehicle {
         this.marker = L.circleMarker([lat, lng], { ...trafficStyle, pane: 'vehiclePane' }).addTo(vehicleLayerGroup);
         this.speed = 0; this.state = 'IDLE'; 
         this.pathQueue = []; this.pulledOver = false; this.resuming = false;
-        this.originalPath = []; this.reactionDelay = Math.random() * 800; 
+        this.originalPath = []; this.reactionDelay = Math.random() * 800; this.resumeTime = 0;
     }
 
     setPath(points, speed) {
@@ -222,43 +219,56 @@ class Vehicle {
     update(dt, ambIndex, vehiclesAhead) {
         if (this.state === 'CLEARED') return;
 
-        // Collision Check
+        // Cleanup if far behind
+        const distToAmb = getDistance(this.lat, this.lng, heroState.lat, heroState.lng);
+        if (distToAmb > 150 && heroState.currentIndex > this.node.pathIndex) {
+            this.destroy();
+            return;
+        }
+
+        // collision check
         let maxSpeed = CONFIG.carClearSpeed;
         if (vehiclesAhead) {
             vehiclesAhead.forEach(v => {
                 if (v === this) return;
                 const dist = getDistance(this.lat, this.lng, v.lat, v.lng);
                 if (dist < 30) {
-                    if (dist < CONFIG.bumperDist) maxSpeed = 0;
+                    if (dist < CONFIG.bumperDist) { maxSpeed = 0; }
                     else if (dist < CONFIG.bumperDist * 2) maxSpeed = Math.min(maxSpeed, v.speed);
                 }
             });
         }
 
-        // Emergency Logic
+        // emergency logic
         if (systemState === 'EMERGENCY') {
             
-            // Cross Traffic
+            // cross traffic
             if (this.type.includes('cross')) {
                 const distToCenter = getDistance(this.lat, this.lng, this.node.lat, this.node.lng);
                 if (smartCityEnabled && this.node.state === 'GREEN_WAVE') {
                     if (distToCenter < CONFIG.stopLineDist && distToCenter > 6) { this.speed = 0; this.updateStyle('STOP'); }
                     else if (distToCenter <= 6) { this.speed = CONFIG.carClearSpeed; this.updateStyle('PANIC'); }
                 } else {
-                    const distToAmb = getDistance(this.lat, this.lng, heroState.lat, heroState.lng);
+                    // const distToAmb = getDistance(this.lat, this.lng, heroState.lat, heroState.lng);
                     if (distToAmb < 30 && distToCenter < 15) { this.speed = 0; this.updateStyle('STOP'); }
                 }
             }
 
-            // Same Road
+            // same road
             if (this.type === 'blocker') {
-                const dAmb = getDistance(this.lat, this.lng, heroState.lat, heroState.lng);
                 const isAhead = (this.node.pathIndex > ambIndex);
-                if (isAhead && dAmb < 250 && !this.pulledOver && !this.resuming) {
+                
+                // Pull over if ambulance is approaching
+                if (isAhead && distToAmb < 250 && !this.pulledOver && !this.resuming) {
                     setTimeout(() => this.initiatePullOver(), this.reactionDelay);
-                } else if (!isAhead && this.pulledOver && !this.resuming && dAmb > 20) {
-                    this.resuming = true;
-                    setTimeout(() => this.resumeDriving(), 300);
+                } 
+                // Resume if ambulance has passed (approx 15m buffer)
+                else if (!isAhead && this.pulledOver && !this.resuming && distToAmb > 15) {
+                    if (this.resumeTime === 0) this.resumeTime = Date.now() + 2000; // 2s delay
+                    if (Date.now() > this.resumeTime && (this.node.state === 'GREEN' || smartCityEnabled)) {
+                        this.resuming = true;
+                        this.resumeDriving();
+                    }
                 }
             }
         }
@@ -291,7 +301,7 @@ class Vehicle {
         this.updateStyle('YIELD');
         this.originalPath = this.pathQueue.length ? [...this.pathQueue] : [[this.node.lat, this.node.lng]];
         const bearing = getBearing({lat:this.lat, lng:this.lng}, {lat:this.node.lat, lng:this.node.lng});
-        const pullPos = destinationPoint(this.lat, this.lng, 3.5, bearing + 90); 
+        const pullPos = destinationPoint(this.lat, this.lng, 4.5, bearing + 90); 
         this.pathQueue = [[pullPos.lat, pullPos.lng]];
         this.speed = 8;
     }
@@ -302,6 +312,7 @@ class Vehicle {
         let mergePt = this.originalPath.length ? {lat:this.originalPath[0][0], lng:this.originalPath[0][1]} : {lat:this.node.lat, lng:this.node.lng};
         this.pathQueue = [[mergePt.lat, mergePt.lng], ...this.originalPath];
         this.speed = CONFIG.carSpeed;
+        this.resumeTime = 0;
     }
 
     updateStyle(mode) {
@@ -317,65 +328,75 @@ class Intersection {
     constructor(data) {
         Object.assign(this, data);
         this.state = 'RED'; 
-        this.vehicles = [];
+        this.volume = 0.5; // default volume
         this.lightMarker = null;
+        this.mainPoly = null;
+        this.crossPoly = null;
 
-        // Visuals
-        if (this.crossRoadGeom.length > 1) {
-            this.crossPoly = L.polyline(this.crossRoadGeom, { color: '#ff0000', weight: 14, opacity: 0 }).addTo(visualLayerGroup);
-        }
-
-        const geomPoints = [];
-        let idx = Math.max(0, this.pathIndex - 5);
-        while(idx <= Math.min(routePath.length - 1, this.pathIndex + 5)) {
-            geomPoints.push([routePath[idx].lat, routePath[idx].lng]); idx++;
+        // visuals
+        // Calculate bearing for signal orientation
+        let bearing = 0;
+        if (routePath.length > 1) {
+            const p1 = routePath[Math.max(0, this.pathIndex - 1)];
+            const p2 = routePath[Math.min(routePath.length - 1, this.pathIndex + 1)];
+            if (p1 && p2) bearing = getBearing(p1, p2);
         }
         
-        if(geomPoints.length > 1) {
-            // Main Road
-            this.mainPoly = L.polyline(geomPoints, { color: '#ff0000', weight: 14, opacity: 0.3 }).addTo(visualLayerGroup);
-            
-            const start = geomPoints[0];
-            const bearing = getBearing({lat:start[0], lng:start[1]}, {lat:this.lat, lng:this.lng});
-            const signalPos = destinationPoint(this.lat, this.lng, 20, bearing + 180); 
-            
-            // Signal
-            this.lightMarker = L.marker([signalPos.lat, signalPos.lng], { 
-                icon: createSignalIcon('#ff0000', bearing), opacity: 1 
-            }).addTo(visualLayerGroup);
+        // Offset signal to the right side of the road (8 meters)
+        const signalPos = destinationPoint(this.lat, this.lng, 8, bearing + 90);
+
+        // signal
+        this.lightMarker = L.marker([signalPos.lat, signalPos.lng], { 
+            icon: createSignalIcon('#ff0000', bearing), opacity: 1 
+        }).addTo(visualLayerGroup);
+        
+        // road highlights
+        const geomPoints = [];
+        let idx = this.pathIndex;
+        let backDist = 0;
+        let fwdDist = 0;
+        
+        // Trace back 40m and forward 20m to highlight the full intersection road
+        let startIdx = Math.max(0, idx - 5); 
+        let endIdx = Math.min(routePath.length - 1, idx + 3);
+
+        for(let i = startIdx; i <= endIdx; i++) {
+             geomPoints.push([routePath[i].lat, routePath[i].lng]);
         }
+        if(geomPoints.length > 1) {
+             this.mainPoly = L.polyline(geomPoints, { color: '#ff0000', weight: 14, opacity: 0.4 }).addTo(visualLayerGroup);
+        }
+        
+        // Cross Poly
+        if (this.crossRoadGeom && this.crossRoadGeom.length > 1) {
+             this.crossPoly = L.polyline(this.crossRoadGeom, { color: '#ff0000', weight: 14, opacity: 0.4 }).addTo(visualLayerGroup);
+        }
+
+        this.updateVisuals('RED');
         
         this.vehicles = [];
         this.spawnBlockersOnPath();
-        if (this.crossRoadGeom.length > 1) this.spawnCrossQueue();
-        
-        this.updateVisuals('RED');
-        
-        this.spawner = setInterval(() => {
-            if (this.state === 'RED' && this.crossRoadGeom.length > 1) this.spawnActiveCrossTraffic(1);
-        }, 1500);
+        if (this.crossRoadGeom && this.crossRoadGeom.length > 1) this.spawnCrossQueue();
     }
 
     updateVisuals(state) {
-        const color = (state === 'GREEN') ? '#00ff00' : '#ff0000';
+        const mainColor = (state === 'GREEN') ? '#00ff00' : '#ff0000';
+        const crossColor = (state === 'GREEN') ? '#ff0000' : '#00ff00';
         
         if (this.lightMarker) {
             const el = this.lightMarker.getElement();
             if(el) {
-                el.innerHTML = el.innerHTML.replace(/color:.*?;/, `color: ${color};`);
-                el.style.borderColor = color;
-                el.style.boxShadow = `0 0 15px ${color}`;
-                el.style.color = color;
+                const arrow = el.querySelector('div');
+                if(arrow) {
+                    arrow.style.color = mainColor;
+                    arrow.style.textShadow = `0 0 10px ${mainColor}`;
+                }
+                el.style.borderColor = mainColor;
+                el.style.boxShadow = `0 0 15px ${mainColor}`;
             }
         }
-
-        if (state === 'GREEN') {
-            if(this.mainPoly) this.mainPoly.setStyle({opacity: 0.4, color: '#00ff00'});
-            if(this.crossPoly) this.crossPoly.setStyle({opacity: 0.3, color: '#ff0000'});
-        } else {
-            if(this.mainPoly) this.mainPoly.setStyle({opacity: 0.4, color: '#ff0000'});
-            if(this.crossPoly) this.crossPoly.setStyle({opacity: 0});
-        }
+        if (this.mainPoly) this.mainPoly.setStyle({ color: mainColor, opacity: 0.4 });
+        if (this.crossPoly) this.crossPoly.setStyle({ color: crossColor, opacity: 0.4 });
     }
 
     isLocationClear(lat, lng) {
@@ -465,31 +486,25 @@ class Intersection {
     update(dt, ambIndex) { this.vehicles.forEach(v => v.update(dt, ambIndex, this.vehicles)); }
 
     destroy() {
-        clearInterval(this.spawner);
-        // Fix: Explicitly remove visual layers to prevent crash
-        if(this.crossPoly) map.removeLayer(this.crossPoly);
-        if(this.mainPoly) map.removeLayer(this.mainPoly);
         if(this.lightMarker) map.removeLayer(this.lightMarker);
-        this.vehicles.forEach(v => v.destroy());
+        if(this.mainPoly) map.removeLayer(this.mainPoly);
+        if(this.crossPoly) map.removeLayer(this.crossPoly);
     }
 }
 
-
-// ==========================================
-// 6. MAIN SYSTEM
-// ==========================================
+// Main system
 
 async function startRoaming() {
     clearSystem();
     systemState = 'ROAMING';
     updateHUDStatus("UNIT 42: PATROLLING", "LIVE OSM GEOMETRY");
     
-    // UI Safety Checks
+    // ui safety checks
     const startBtn = document.getElementById('start-btn');
     if(startBtn) startBtn.style.display = 'block';
     
-    const retryBtn = document.getElementById('retry-btn');
-    if(retryBtn) retryBtn.style.display = 'none';
+    const hist = document.getElementById('history-container');
+    if(hist) hist.style.display = routeHistory.length > 0 ? 'block' : 'none';
     
     const vignette = document.getElementById('vignette');
     if(vignette) vignette.style.display = 'none';
@@ -498,7 +513,6 @@ async function startRoaming() {
     if(recenter) recenter.style.display = 'none';
     
     const timer = document.getElementById('timer-display');
-    if(timer) timer.innerText = "00:00.00";
     
     clearInterval(timerInterval);
     cameraLocked = true;
@@ -506,34 +520,28 @@ async function startRoaming() {
     const p1 = {lat: heroMarker.getLatLng().lat, lng: heroMarker.getLatLng().lng};
     const p2 = await getValidRoadPoint();
     
-    await calculateRoute(p1, p2, false).catch(e => {
-        console.log("Roam Abort, Retrying...");
-        setTimeout(startRoaming, 1000);
-    });
+    const loader = document.getElementById('traffic-loader');
+    if(loader) loader.style.display = 'flex';
+
+    mqttClient.publish(TOPICS.reqStart, JSON.stringify({
+        start: p1,
+        end: p2,
+        mode: 'ROAMING'
+    }));
 }
 
 async function triggerEmergency(isRetry = false) {
-    if (systemState === 'EMERGENCY' || isRouting) return;
+    if (systemState === 'EMERGENCY') return;
     
     const startBtn = document.getElementById('start-btn');
     if(startBtn) startBtn.style.display = 'none';
     
-    const retryBtn = document.getElementById('retry-btn');
-    if(retryBtn) retryBtn.style.display = 'none';
-    
-    const vignette = document.getElementById('vignette');
-    if (!smartCityEnabled && vignette) vignette.style.display = 'block';
-    
-    startTime = Date.now();
-    timerInterval = setInterval(() => {
-        const diff = Date.now() - startTime;
-        const mins = Math.floor(diff / 60000);
-        const secs = Math.floor((diff % 60000) / 1000);
-        const ms = Math.floor((diff % 1000) / 10);
-        const tDisp = document.getElementById('timer-display');
-        if(tDisp) tDisp.innerText = `${mins.toString().padStart(2,'0')}:${secs.toString().padStart(2,'0')}.${ms.toString().padStart(2,'0')}`;
-    }, 50);
+    const hist = document.getElementById('history-container');
+    if(hist) hist.style.display = 'none';
 
+    const prevRun = document.getElementById('prev-run');
+    if(prevRun) prevRun.style.display = 'block';
+    
     let startPos, crashSite;
 
     if (isRetry && lastStart && lastEnd) {
@@ -563,23 +571,39 @@ async function triggerEmergency(isRetry = false) {
     const heroEl = document.querySelector('.hero-marker');
     if(heroEl) heroEl.classList.add('hero-els');
     
-    showToast(isRetry ? "🔄 RETRYING SCENARIO" : "🚨 EMERGENCY CALL");
+    showToast(isRetry ? "RETRYING SCENARIO" : "EMERGENCY CALL");
     updateHUDStatus("RESPONDING CODE 3", isRetry ? "REPLAY MODE" : "EMERGENCY ROUTING");
     
-    await calculateRoute(startPos, crashSite, true).catch(e => {
-        console.log("Emergency Route Failed, Retrying...");
-        showToast("ROUTE FAILED - RETRYING...");
-        updateHUDStatus("CONNECTION ERROR", "RETRYING...");
-        setTimeout(() => triggerEmergency(isRetry), 1000);
-    });
+    const loader = document.getElementById('traffic-loader');
+    if(loader) loader.style.display = 'flex';
+
+    // publish start request to backend
+    mqttClient.publish(TOPICS.reqStart, JSON.stringify({
+        start: startPos,
+        end: crashSite,
+        mode: 'EMERGENCY'
+    }));
+
+    // start timer
+    if(timerInterval) clearInterval(timerInterval);
+    startTime = Date.now();
+    timerInterval = setInterval(() => {
+        const diff = Date.now() - startTime;
+        const mins = Math.floor(diff / 60000);
+        const secs = Math.floor((diff % 60000) / 1000);
+        const ms = Math.floor((diff % 1000) / 10);
+        const tDisp = document.getElementById('timer-display');
+        if(tDisp) tDisp.innerText = `${mins.toString().padStart(2,'0')}:${secs.toString().padStart(2,'0')}.${ms.toString().padStart(2,'0')}`;
+    }, 50);
 }
 
 function clearSystem() {
     intersections.forEach(i => i.destroy());
     intersections = [];
     if(crashMarker) map.removeLayer(crashMarker);
+    if(beepMarker) map.removeLayer(beepMarker); beepMarker = null;
     
-    // SAFETY CHECKS
+    // safety checks
     const heroEl = document.querySelector('.hero-marker');
     if (heroEl) {
         heroEl.classList.remove('hero-els');
@@ -588,277 +612,166 @@ function clearSystem() {
     const hud = document.getElementById('hud');
     if(hud) hud.classList.remove('mission-complete');
     
-    // NUCLEAR CLEAR
+    // nuclear clear
     routeLayerGroup.clearLayers();
     vehicleLayerGroup.clearLayers();
     visualLayerGroup.clearLayers();
     currentRouteLine = null;
 }
 
-// --- ROUTING ---
-async function calculateRoute(start, end, scanForLights) {
-    if(isRouting) return;
-    isRouting = true;
-    
-    if(scanForLights) showToast("CALCULATING ROUTE...");
-    
-    const osrmUrl = `http://127.0.0.1:5000/route/v1/driving/${start.lng},${start.lat};${end.lng},${end.lat}?overview=full&geometries=geojson`;
-    const data = await fetchJSON(osrmUrl);
-    
-    if (!data) {
-        showToast("CONNECTION FAILED - RETRYING");
-        isRouting = false;
-        setTimeout(() => calculateRoute(start, end, scanForLights), 2000); 
-        return;
-    }
+// MQTT handlers
+function handleRouteResponse(data) {
+    // draw route
+    const loader = document.getElementById('traffic-loader');
+    if(loader) loader.style.display = 'none';
 
-    const rawCoords = data.routes[0].geometry.coordinates;
-    const cleanCoords = rawCoords.filter(c => isValidCoord(c[1], c[0]));
-
-    let totalDist = 0;
-
-    routePath = cleanCoords.map((c, i) => {
-        const lat = c[1]; const lng = c[0];
-        let seg = 0;
-        if(i > 0) seg = getDistance(cleanCoords[i-1][1], cleanCoords[i-1][0], lat, lng);
-        totalDist += seg;
-        return { lat, lng, totalDist };
-    });
-    
-    heroState.dist = 0;
-    heroState.speed = 0; 
-    heroState.currentIndex = 0;
-    
+    routePath = data.path;
     routeLayerGroup.clearLayers();
-    currentRouteLine = L.polyline(routePath.map(p=>[p.lat, p.lng]), {
-        color: 'white', opacity: scanForLights ? 0.3 : 0, weight: 8, pane: 'routePane'
-    }).addTo(routeLayerGroup);
-
-    if (scanForLights) {
-        // Fix: Clear previous intersections to ensure full route scan
-        intersections.forEach(i => i.destroy());
-        intersections = [];
-        showToast("SYNCING TRAFFIC NET...");
-        await fetchDeepIntersectionData(cleanCoords);
-    }
-    isRouting = false;
-}
-
-async function fetchDeepIntersectionData(routeCoords) {
-    let minLat=90, maxLat=-90, minLng=180, maxLng=-180;
-    routeCoords.forEach(c => {
-        minLat=Math.min(minLat, c[1]); maxLat=Math.max(maxLat, c[1]);
-        minLng=Math.min(minLng, c[0]); maxLng=Math.max(maxLng, c[0]);
-    });
-
-    const query = `[out:json][timeout:150];(node["highway"="traffic_signals"](${minLat-0.002},${minLng-0.002},${maxLat+0.002},${maxLng+0.002});)->.signals;.signals out;way(bn.signals);out geom;`;
-    const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
     
-    const osmData = await fetchJSON(url);
-    if (!osmData) return;
+    // only draw route line if in emergency mode
+    if (systemState === 'EMERGENCY') {
+        currentRouteLine = L.polyline(data.path.map(p=>[p.lat, p.lng]), {
+            color: 'white', opacity: 0.3, weight: 8, pane: 'routePane'
+        }).addTo(routeLayerGroup);
+    }
 
-    const waysByNode = {};
-    osmData.elements.forEach(el => {
-        if (el.type === 'way') {
-            el.nodes.forEach(nid => {
-                if (!waysByNode[nid]) waysByNode[nid] = [];
-                waysByNode[nid].push(el);
-            });
-        }
-    });
-
-    osmData.elements.forEach(el => {
-        if (el.type === 'node') {
-            if (intersections.find(i => i.id === el.id)) return;
-
-            // Deduplication
-            let duplicate = false;
-            intersections.forEach(ex => {
-                if (getDistance(ex.lat, ex.lng, el.lat, el.lon) < 60) duplicate = true; 
-            });
-            if (duplicate) return;
-
-            let bestIdx = -1, minD = Infinity;
-            routePath.forEach((p, i) => {
-                const d = getDistance(el.lat, el.lon, p.lat, p.lng);
-                if(d < minD) { minD = d; bestIdx = i; }
-            });
-
-            if (minD < CONFIG.scanRadius) {
-                if (bestIdx < heroState.currentIndex) return;
-
-                let crossName = null;
-                let crossGeom = [];
-                const ways = waysByNode[el.id] || [];
-                const crossWay = ways.find(w => !w.tags?.name?.includes("O'Connor") && !w.tags?.name?.includes("Elgin"));
-
-                if (crossWay) {
-                    crossName = crossWay.tags?.name?.toUpperCase();
-                    crossGeom = crossWay.geometry.map(g => [g.lat, g.lon]);
-                }
-
-                intersections.push(new Intersection({
-                    id: el.id, name: crossName,
-                    lat: routePath[bestIdx].lat, lng: routePath[bestIdx].lng,
-                    pathIndex: bestIdx, crossRoadGeom: crossGeom
-                }));
-            }
-        }
-    });
-    intersections.sort((a,b) => a.pathIndex - b.pathIndex);
+    // clear intersections
+    intersections.forEach(i => i.destroy());
+    intersections = [];
+    
+    // initial batch (usually empty now due to chunking)
+    if (systemState === 'EMERGENCY' && data.intersections) {
+        data.intersections.forEach(i => intersections.push(new Intersection(i)));
+    }
 }
 
+function handleIntersectionUpdate(data) {
+    // only spawn intersections and vehicles if in emergency mode
+    if (systemState === 'EMERGENCY') {
+        data.intersections.forEach(i => {
+            if (!intersections.find(ex => ex.id === i.id)) {
+                intersections.push(new Intersection(i));
+            }
+        });
+    }
+}
 
-// --- MAIN LOOP ---
+function handleAmbulanceUpdate(data) {
+    heroState.lat = data.lat;
+    heroState.lng = data.lng;
+    heroState.speed = data.speed;
+    heroMarker.setLatLng([data.lat, data.lng]);
+    
+    if (cameraLocked) {
+        map.setView([data.lat, data.lng], map.getZoom(), { animate: false });
+    }
+    
+    updateSpeed(Math.round(data.speed * 1.8));
+
+    // Visuals for clearing intersection (Red Pulse)
+    const heroEl = document.querySelector('.hero-marker');
+    if (heroEl) {
+        if (data.status === 'CLEARING') heroEl.classList.add('hero-stopped');
+        else heroEl.classList.remove('hero-stopped');
+    }
+
+    if (data.status === 'ARRIVED' && systemState === 'ROAMING') {
+        setTimeout(() => startRoaming(), 1000);
+    } else if (data.status === 'ARRIVED' && systemState === 'EMERGENCY') {
+        clearInterval(timerInterval);
+        systemState = 'ARRIVED';
+        
+        // save time
+        const finalTime = document.getElementById('timer-display').innerText;
+        routeHistory.push({
+            id: routeHistory.length + 1,
+            start: lastStart,
+            end: lastEnd,
+            time: finalTime,
+            smart: smartCityEnabled
+        });
+        updateHistoryUI();
+        
+        const prevRun = document.getElementById('prev-run');
+        if(prevRun) { prevRun.innerText = "PREV: " + finalTime; prevRun.style.display = 'block'; }
+
+        showToast("MISSION COMPLETE");
+        vehicleLayerGroup.clearLayers(); // clear vehicles immediately
+        updateHUDStatus("MISSION COMPLETE", "RETURNING TO PATROL");
+        setTimeout(() => {
+            startRoaming();
+        }, 5000);
+    }
+}
+
+function handleSignalUpdate(data) {
+    const target = intersections.find(i => i.id === data.id);
+    if (target) {
+        target.state = data.state;
+        target.updateVisuals(data.state);
+        updateHUDStatus("GREEN WAVE ACTIVE", "INTERSECTION CLEARED");
+    }
+}
+
+function handleVolumeUpdate(data) {
+    const target = intersections.find(i => i.id === data.id);
+    if (target) {
+        target.volume = data.volume;
+    }
+    updateTrafficStats();
+}
+
+function updateTrafficStats() {
+    if (intersections.length === 0) return;
+    const total = intersections.reduce((sum, i) => sum + (i.volume || 0), 0);
+    const avg = (total / intersections.length * 100).toFixed(0);
+    const el = document.getElementById('traffic-stat');
+    if (el) el.innerText = `AVG TRAFFIC: ${avg}%`;
+}
+
+function handleError(data) {
+    const loader = document.getElementById('traffic-loader');
+    if(loader) loader.style.display = 'none';
+
+    if (data.status === 504) {
+        // Extremely clear 504 error
+        const c = document.getElementById('toast-container');
+        if(c) {
+            const e = document.createElement('div');
+            e.innerText = "⚠️ SERVER TIMEOUT (504) - MAP DATA UNAVAILABLE";
+            e.style.cssText = "background:rgba(255,0,0,0.9); color:white; padding:15px 20px; border-left:5px solid white; font-family:monospace; margin-top:5px; animation:fadeIn 0.3s; box-shadow:0 0 20px red; font-weight:bold; font-size:16px;";
+            c.appendChild(e);
+            setTimeout(() => { e.style.opacity='0'; setTimeout(()=>e.remove(),500); }, 8000);
+        }
+    }
+}
+
+// Render loop visuals only
 function loop(now) {
     if (!lastTime) lastTime = now;
-    const dt = Math.min((now - lastTime) / 1000, 0.1); 
+    const dt = Math.min((now - lastTime) / 1000, 0.1);
     lastTime = now;
 
-    if (!routePath || routePath.length < 2) {
-        requestAnimationFrame(loop);
-        return; 
-    }
-
-    if (cameraLocked) {
-        let targetCam = [heroState.lat, heroState.lng];
-        if (heroState.speed > 5) {
-            // Look ahead by distance (20m) instead of fixed index to prevent camera circling/jitter
-            let leadIdx = heroState.currentIndex;
-            const targetDist = routePath[heroState.currentIndex].totalDist + 20;
-            while(leadIdx < routePath.length - 1 && routePath[leadIdx].totalDist < targetDist) {
-                leadIdx++;
-            }
-            
-            const bearing = getBearing({lat:heroState.lat, lng:heroState.lng}, routePath[leadIdx]);
-            const leadPos = destinationPoint(heroState.lat, heroState.lng, 80, bearing);
-            targetCam = [leadPos.lat, leadPos.lng];
-        }
-        map.setView(targetCam, map.getZoom(), { animate: false });
-        map.setView([heroState.lat, heroState.lng], map.getZoom(), { animate: false });
-    }
-
-    const totalLen = routePath[routePath.length-1].totalDist;
-    const distRem = totalLen - heroState.dist;
-
-    if (distRem < 15) {
-        if (systemState === 'EMERGENCY') {
-            systemState = 'ARRIVED';
-            showToast("UNIT ON SCENE");
-            updateHUDStatus("MISSION COMPLETE", "STANDING BY");
-            
-            const heroEl = document.querySelector('.hero-marker');
-            if (heroEl) {
-                heroEl.classList.remove('hero-els');
-                heroEl.classList.remove('hero-stopped');
-            }
-            
-            const hud = document.getElementById('hud');
-            if(hud) hud.classList.add('mission-complete');
-            
-            clearInterval(timerInterval); 
-            const retryBtn = document.getElementById('retry-btn');
-            if(retryBtn) retryBtn.style.display = 'block';
-            
-            setTimeout(startRoaming, 8000); 
-        } else {
-            startRoaming(); 
-        }
-    } else {
-        let targetSpeed = CONFIG.roamSpeed;
-        
-        if (systemState === 'EMERGENCY') {
-            if (smartCityEnabled) {
-                targetSpeed = CONFIG.ambSpeedHigh;
-            } else {
-                targetSpeed = CONFIG.ambSpeedHigh; 
-                let nearestInt = null; let minDist = Infinity;
-                intersections.forEach(i => {
-                    if (i.pathIndex > heroState.currentIndex) {
-                        const d = routePath[i.pathIndex].totalDist - heroState.dist;
-                        if (d > 0 && d < minDist) { minDist = d; nearestInt = i; }
-                    }
-                });
-
-                // STOP AT RED LIGHTS (System OFF)
-                if (nearestInt && minDist < CONFIG.stopLineDist + 5) {
-                    targetSpeed = 0; 
-                    if (heroState.speed < 2) targetSpeed = 0; 
-                }
-            }
-        }
-
-        // Add "Stuck" Effect
-        const heroEl = document.querySelector('.hero-marker');
-        if (heroEl) {
-            if (systemState === 'EMERGENCY' && heroState.speed < 1 && targetSpeed === 0) {
-                heroEl.classList.add('hero-stopped');
-            } else {
-                heroEl.classList.remove('hero-stopped');
-            }
-        }
-
-        // Fix: Speed oscillation
-        if (Math.abs(heroState.speed - targetSpeed) < 0.5) {
-            heroState.speed = targetSpeed;
-        } else if (heroState.speed < targetSpeed) heroState.speed += CONFIG.ambAccel * dt;
-        else heroState.speed -= CONFIG.ambAccel * 2 * dt; 
-        
-        heroState.dist += heroState.speed * dt;
-    }
-
-    if (heroState.dist >= totalLen) heroState.dist = totalLen - 0.1;
-
-    const pos = getPosFromDist(heroState.dist);
-    if(pos) {
-        heroState.lat = pos.lat; heroState.lng = pos.lng; heroState.currentIndex = pos.index;
-        heroMarker.setLatLng([pos.lat, pos.lng]);
-        if (systemState === 'EMERGENCY') runAIScan();
-    }
-
     intersections.forEach(i => i.update(dt, heroState.currentIndex));
-    updateSpeed(Math.round(heroState.speed * 3.6));
     requestAnimationFrame(loop);
 }
 
-function runAIScan() {
-    let target = null;
-    let minTime = Infinity;
-
-    if (!intersections || intersections.length === 0 || !routePath[heroState.currentIndex]) return;
-
-    intersections.forEach(i => {
-        if (i.pathIndex > heroState.currentIndex && routePath[i.pathIndex]) {
-            const dist = routePath[i.pathIndex].totalDist - routePath[heroState.currentIndex].totalDist;
-            const currentSpeed = Math.max(1, heroState.speed);
-            const eta = dist / currentSpeed; 
-            
-            if (eta < CONFIG.lookAheadTime && i.state !== 'GREEN_WAVE') {
-            if (eta < CONFIG.lookAheadTime && i.state !== 'GREEN') {
-                i.triggerGreenWave();
-                if (eta < minTime) { minTime = eta; target = i; }
-            }
-        }
-    });
-
-    if (target) {
-        updateHUDStatus("APPROACHING: " + (target.name || "INTERSECTION"), `ETA: ${minTime.toFixed(1)}s`);
-        target.triggerGreenWave();
-    } else {
-        updateHUDStatus("GREEN WAVE ACTIVE", "ROUTE CLEAR");
-    }
-}
-
-// UI Functions
+// UI functions
 function updateHUDStatus(main, sub) { 
     const t = document.getElementById('hud-top');
     const s = document.getElementById('scan-target');
-    if(t) t.innerText = sub;
-    if(s) s.innerText = main; 
+    if(t && sub) t.innerText = sub;
+    if(s && main) s.innerText = main; 
 }
-function updateSpeed(val) { 
-    const el = document.getElementById('speed-value');
-    if(el) el.innerText = val; 
+
+let lastDisplayedSpeed = 0;
+function updateSpeed(val) {
+    // Smoothing to prevent flickering (e.g. 49/51)
+    if (Math.abs(val - lastDisplayedSpeed) > 1) {
+        lastDisplayedSpeed = val;
+        const el = document.getElementById('speed-value');
+        if(el) el.innerText = val;
+    }
 }
 
 function showToast(msg) {
@@ -873,19 +786,26 @@ function showToast(msg) {
 }
 
 window.toggleSystem = () => {
+    mqttClient.publish(TOPICS.cfgSmart, JSON.stringify({
+        enabled: !smartCityEnabled
+    }));
     smartCityEnabled = !smartCityEnabled;
     const label = document.getElementById('toggle-text');
     if(label) {
         label.innerText = smartCityEnabled ? "SMART CITY: ON" : "SMART CITY: OFF";
         label.style.color = smartCityEnabled ? "#0f0" : "#f00";
     }
-    if(!smartCityEnabled && systemState === 'EMERGENCY') {
-        const v = document.getElementById('vignette');
-        if(v) v.style.display = 'block';
-        intersections.forEach(i => { i.state='RED'; i.updateVisuals('RED'); });
-    } else {
-        const v = document.getElementById('vignette');
-        if(v) v.style.display = 'none';
+};
+
+window.toggleTraffic = () => {
+    mqttClient.publish(TOPICS.cfgTraffic, JSON.stringify({
+        enabled: !maxTrafficEnabled
+    }));
+    maxTrafficEnabled = !maxTrafficEnabled;
+    const label = document.getElementById('traffic-text');
+    if(label) {
+        label.innerText = maxTrafficEnabled ? "MAX TRAFFIC: ON" : "MAX TRAFFIC: OFF";
+        label.style.color = maxTrafficEnabled ? "#ff0000" : "#ccc";
     }
 };
 
@@ -895,16 +815,49 @@ window.recenterCamera = () => {
     if(btn) btn.style.display = 'none';
 };
 
-window.triggerGreenWave = (id) => {
-    const target = intersections.find(i => i.id === id);
-    if(target) target.triggerGreenWave();
+function updateHistoryUI() {
+    const select = document.getElementById('history-select');
+    if(!select) return;
+    select.innerHTML = '<option value="-1">-- SELECT PAST ROUTE --</option>';
+    routeHistory.forEach((r, i) => {
+        const mode = r.smart ? "ON" : "OFF";
+        const opt = document.createElement('option');
+        opt.value = i;
+        opt.innerText = `Run ${r.id}: ${r.time} (Smart: ${mode})`;
+        select.appendChild(opt);
+    });
+}
+
+window.restoreHistoryRoute = (index) => {
+    if(index < 0) return;
+    const r = routeHistory[index];
+    if(!r) return;
+
+    const nextState = !smartCityEnabled;
+    if(confirm(`Smart City is currently ${smartCityEnabled ? "ON" : "OFF"}.\nDo you want to turn it ${nextState ? "ON" : "OFF"}?`)) {
+        toggleSystem();
+        const chk = document.querySelector('.switch input');
+        if(chk) chk.checked = smartCityEnabled;
+    }
+
+    lastStart = r.start;
+    lastEnd = r.end;
+    triggerEmergency(true);
+    
+    // Reset dropdown so it can be clicked again
+    const select = document.getElementById('history-select');
+    if(select) select.value = "-1";
 };
 
 // Injection
 document.body.insertAdjacentHTML('beforeend', `
 <div id="vignette"></div>
+<div id="loading-overlay"><div class="spinner"></div>SYNCING TRAFFIC DATA...</div>
+<div id="mini-loader"><div class="mini-spinner"></div>LOADING TRAFFIC...</div>
+<div id="traffic-loader"><div class="mini-spinner"></div>FETCHING TRAFFIC DATA...</div>
 <div id="controls">
     <div id="timer-display">00:00.00</div>
+    <div id="prev-run">PREV: --:--.--</div>
     <div>
         <span id="toggle-text" class="toggle-label" style="color:#0f0">SMART CITY: ON</span>
         <label class="switch">
@@ -912,14 +865,27 @@ document.body.insertAdjacentHTML('beforeend', `
             <span class="slider"></span>
         </label>
     </div>
-    <div class="btn-group">
+    <div>
+        <span id="traffic-text" class="toggle-label" style="color:#ccc">MAX TRAFFIC: OFF</span>
+        <label class="switch">
+            <input type="checkbox" onchange="toggleTraffic()">
+            <span class="slider"></span>
+        </label>
+    </div>
+    <div class="btn-group" style="flex-direction:column; width:100%">
         <button id="start-btn" class="action-btn" onclick="triggerEmergency(false)">START RUN</button>
-        <button id="retry-btn" class="action-btn" onclick="triggerEmergency(true)">RETRY ROUTE</button>
+        <div id="history-container" style="display:none; width:100%; margin-top:10px;">
+            <button id="retry-btn" class="action-btn" style="width:100%; margin-bottom:10px;" onclick="triggerEmergency(true)">REDO LAST ROUTE</button>
+            <select id="history-select" onchange="restoreHistoryRoute(this.value)" style="width:100%; padding:10px; background:rgba(0,0,0,0.8); color:white; border:1px solid #555; border-radius:5px; font-family:'Consolas', monospace; cursor:pointer;">
+                <option value="-1">-- HISTORY --</option>
+            </select>
+        </div>
     </div>
 </div>
-<button id="recenter-btn" onclick="recenterCamera()">📍 RE-CENTER</button>
+<button id="recenter-btn" onclick="recenterCamera()">RE-CENTER</button>
 <div id="hud">
     <div class="hud-row"><span class="hud-label">SYSTEM:</span><span class="hud-val hud-active" id="hud-top">LIVE OSM GEOMETRY</span></div>
+    <div class="hud-row"><span class="hud-label">DENSITY:</span><span class="hud-val" id="traffic-stat">AVG TRAFFIC: 0%</span></div>
     <hr style="border:0; border-top:1px solid #333; margin:8px 0;">
     <div style="font-size:16px; font-weight:bold; color:#ffff00" id="scan-target">INITIALIZING...</div>
 </div>

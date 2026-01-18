@@ -1,10 +1,13 @@
-version: "3.9"
-
 services:
-  frontend:
-    image: nginx:alpine
-    container_name: green-wave-frontend
+  solace:
+    image: solace/solace-pubsub-standard
+    container_name: solace-broker
+    shm_size: 2g
     ports:
-      - "8080:80"
-    volumes:
-      - ./:/usr/share/nginx/html:cached
+      - "1883:1883"  # MQTT TCP (Backend)
+      - "8000:8000"  # MQTT WebSockets (Frontend)
+      - "8081:8080"  # Management Console
+    environment:
+      - username_admin_globalaccesslevel=admin
+      - username_admin_password=admin
+      - system_scaling_maxconnectioncount=100
