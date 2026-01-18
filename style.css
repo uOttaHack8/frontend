@@ -1,119 +1,145 @@
-body, html { 
-    margin: 0; padding: 0; height: 100%; 
-    background-color: #000; overflow: hidden; 
-    font-family: 'Segoe UI', monospace;
-}
+/* --- GLOBAL --- */
+body { margin: 0; padding: 0; background: #111; font-family: 'Segoe UI', sans-serif; overflow: hidden; user-select: none; -webkit-user-select: none; }
+#map { position: absolute; top: 0; bottom: 0; width: 100%; z-index: 1; }
 
-#map { width: 100%; height: 100vh; background-color: #000; }
-
-/* SPEEDOMETER (Bottom Right) */
-#speed-gauge {
-    position: absolute;
-    bottom: 30px;
-    right: 30px;
-    width: 120px;
-    height: 120px;
-    background: rgba(0,0,0,0.8);
-    border: 2px solid #333;
-    border-radius: 50%;
-    z-index: 2000;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    box-shadow: 0 0 20px rgba(0, 255, 204, 0.1);
-}
-
-#speed-value {
-    font-size: 42px;
-    color: #fff;
-    font-weight: bold;
-    line-height: 1;
-}
-
-#speed-unit {
-    font-size: 12px;
-    color: #888;
-    margin-top: 5px;
-}
-
-/* SYSTEM HUD (Top Right) */
+/* --- HUD & STATS --- */
 #hud {
-    position: absolute;
-    top: 20px;
-    right: 20px;
-    background: rgba(0, 0, 0, 0.9);
-    border-left: 4px solid #00ffcc;
-    padding: 15px;
-    width: 280px;
-    z-index: 2000;
-    pointer-events: none;
-    color: #fff;
+    position: absolute; top: 20px; left: 20px;
+    background: rgba(0, 0, 0, 0.9); padding: 15px;
+    border-left: 4px solid #ffff00; color: #0f0;
+    font-family: "Consolas", monospace; z-index: 9999;
+    min-width: 280px; pointer-events: none;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.8);
+    backdrop-filter: blur(4px);
+}
+.hud-row { display: flex; justify-content: space-between; margin-bottom: 5px; }
+.hud-label { color: #888; font-size: 12px; }
+.hud-val { font-weight: bold; font-size: 14px; }
+.hud-active { color: #ffff00; text-shadow: 0 0 5px #ffff00; animation: blink 1s infinite; }
+@keyframes blink { 50% { opacity: 0.5; } }
+
+/* --- CONTROLS (Top Left, Below HUD) --- */
+#controls {
+    position: absolute; top: 140px; left: 20px;
+    display: flex; flex-direction: column; align-items: flex-start;
+    gap: 15px; z-index: 9999; pointer-events: auto;
 }
 
-.hud-row {
-    display: flex;
-    justify-content: space-between;
-    margin-bottom: 6px;
-    font-size: 13px;
+#timer-display {
+    font-size: 42px; font-weight: 900; color: #fff;
+    font-family: 'Consolas', monospace; text-shadow: 0 0 15px #000;
+    background: rgba(0,0,0,0.7); padding: 5px 20px;
+    border-radius: 5px; border: 1px solid #555;
 }
 
-.hud-label { color: #888; }
-.hud-val { font-weight: bold; color: #fff; }
-.hud-active { color: #00ffcc; text-shadow: 0 0 5px #00ffcc; }
+/* Switch */
+.switch { position: relative; display: inline-block; width: 60px; height: 34px; vertical-align: middle; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #444; transition: .4s; border-radius: 34px; border: 1px solid #777; }
+.slider:before { position: absolute; content: ""; height: 26px; width: 26px; left: 4px; bottom: 4px; background-color: white; transition: .4s; border-radius: 50%; }
+input:checked + .slider { background-color: #00ff00; border-color: #00ff00; }
+input:focus + .slider { box-shadow: 0 0 1px #00ff00; }
+input:checked + .slider:before { transform: translateX(26px); }
 
-@keyframes pulse-red {
-    0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.7); }
-    70% { transform: scale(1.2); box-shadow: 0 0 0 6px rgba(255, 0, 0, 0); }
-    100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 0, 0, 0); }
+.toggle-label {
+    color: white; font-weight: bold; text-shadow: 0 0 5px black;
+    margin-right: 15px; font-size: 16px; background: rgba(0,0,0,0.6);
+    padding: 6px 12px; border-radius: 4px;
 }
 
-.car-pulse {
-    animation: pulse-red 0.8s infinite;
-    fill: #ff0000 !important;
-    stroke: #fff !important;
+/* --- BUTTONS --- */
+.btn-group { display: flex; gap: 10px; margin-top: 5px; }
+
+.action-btn {
+    border: none; padding: 15px 30px; font-size: 18px; font-weight: bold;
+    cursor: pointer; border-radius: 5px; color: white;
+    font-family: 'Segoe UI', sans-serif; letter-spacing: 1px;
+    transition: all 0.2s; text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+    text-transform: uppercase;
 }
 
-.car-yield {
-    fill: #ff3333 !important; /* Solid Red for pulling over */
-    transition: all 0.5s;
+#start-btn { background: #ff0000; box-shadow: 0 0 20px rgba(255,0,0,0.6); }
+#start-btn:hover { background: #ff3333; transform: scale(1.05); }
+
+#retry-btn { background: #0077ff; box-shadow: 0 0 20px rgba(0,119,255,0.6); display: none; }
+#retry-btn:hover { background: #3399ff; transform: scale(1.05); }
+
+#recenter-btn {
+    position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%);
+    background: rgba(0, 255, 0, 0.9); color: black;
+    border: 2px solid white; padding: 10px 25px;
+    font-size: 16px; font-weight: bold; border-radius: 30px;
+    cursor: pointer; z-index: 9999;
+    box-shadow: 0 0 15px rgba(0,0,0,0.5);
+    display: none;
+    animation: bounceIn 0.3s;
+}
+@keyframes bounceIn { from { transform: translateX(-50%) scale(0.5); opacity: 0; } to { transform: translateX(-50%) scale(1); opacity: 1; } }
+
+/* --- VIGNETTE (Stress Mode) --- */
+#vignette {
+    position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+    box-shadow: inset 0 0 200px rgba(255, 0, 0, 0.7);
+    pointer-events: none; z-index: 5000; display: none;
+    animation: stress-pulse 1.5s infinite;
+}
+@keyframes stress-pulse {
+    0% { box-shadow: inset 0 0 150px rgba(255, 0, 0, 0.5); }
+    50% { box-shadow: inset 0 0 250px rgba(255, 0, 0, 0.8); }
+    100% { box-shadow: inset 0 0 150px rgba(255, 0, 0, 0.5); }
 }
 
-/* EMERGENCY LIGHTING SYSTEM (ELS) */
-@keyframes els-strobe {
-    0% { filter: drop-shadow(0 0 10px rgba(255, 0, 0, 0.8)); }
-    25% { filter: drop-shadow(0 0 20px rgba(255, 0, 0, 1)); }
-    50% { filter: drop-shadow(0 0 10px rgba(0, 0, 255, 0.8)); }
-    75% { filter: drop-shadow(0 0 20px rgba(0, 0, 255, 1)); }
-    100% { filter: drop-shadow(0 0 10px rgba(255, 0, 0, 0.8)); }
+/* --- MARKERS & ANIMATIONS --- */
+/* Crash Marker (Emoji) */
+.crash-marker {
+    font-size: 60px; line-height: 1; display: flex; align-items: center; justify-content: center;
+    filter: drop-shadow(0 5px 15px rgba(0,0,0,0.8));
+    cursor: crosshair;
 }
-
-.hero-els {
-    animation: els-strobe 0.4s infinite; /* Fast strobe */
-    z-index: 9999 !important;
+.crash-inner {
+    animation: bounce-crash 1s infinite alternate;
 }
+@keyframes bounce-crash { from { transform: translateY(0); } to { transform: translateY(-10px); } }
 
-/* DESTINATION MARKER */
-.dest-marker {
-    background: rgba(0, 255, 204, 0.2);
-    border: 2px solid #00ffcc;
+/* Traffic Light Signal */
+.signal-marker {
+    display: flex; align-items: center; justify-content: center;
     border-radius: 50%;
-    animation: pulse-green 2s infinite;
+    border: 3px solid white;
+    background: #000;
+    font-size: 18px; font-weight: 900;
+    transition: all 0.2s;
+    box-shadow: 0 0 15px currentColor;
 }
 
-@keyframes pulse-green {
-    0% { transform: scale(1); opacity: 1; }
-    100% { transform: scale(2.5); opacity: 0; }
+/* Ambulance Lights (ELS) */
+.hero-els { filter: drop-shadow(0 0 20px rgba(255, 255, 255, 0.8)); animation: el-flash 0.4s infinite alternate; }
+@keyframes el-flash { 
+    0% { filter: drop-shadow(0 0 15px blue); } 
+    100% { filter: drop-shadow(0 0 15px red); } 
 }
 
-/* COMPLETED STATE (HUD) */
-.mission-complete {
-    color: #00ffcc !important;
-    border-color: #00ffcc !important;
-    animation: hud-flash 1s infinite;
+/* Ambulance Stopped Pulse (When stuck at red light) */
+.hero-stopped {
+    animation: stopped-pulse 1s infinite;
+}
+@keyframes stopped-pulse {
+    0% { opacity: 1; filter: drop-shadow(0 0 0 rgba(255,0,0,0)); }
+    50% { opacity: 0.8; filter: drop-shadow(0 0 30px rgba(255,0,0,1)); }
+    100% { opacity: 1; filter: drop-shadow(0 0 0 rgba(255,0,0,0)); }
 }
 
-@keyframes hud-flash {
-    0%, 100% { background: rgba(0, 0, 0, 0.9); }
-    50% { background: rgba(0, 50, 40, 0.9); }
+/* Completion */
+.mission-complete { border-left: 4px solid #00ff00 !important; box-shadow: 0 0 30px #00ff00 !important; }
+.mission-complete .hud-active { color: #00ff00; text-shadow: 0 0 10px #00ff00; }
+
+/* Speed Gauge */
+#speed-gauge {
+    position: absolute; bottom: 20px; right: 20px;
+    background: rgba(0,0,0,0.8); border: 3px solid #444; border-radius: 50%;
+    width: 120px; height: 120px; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; z-index: 9999;
+    box-shadow: 0 0 20px rgba(0,255,255,0.1); pointer-events: none;
 }
+#speed-value { font-size: 40px; font-weight: 900; color: #fff; }
+#speed-unit { font-size: 12px; color: #888; margin-top: -5px; }
