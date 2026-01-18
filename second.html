@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Green Wave Dashboard</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js"></script>
+</head>
+<body>
+
+  <div id="status-overlay">
+      <strong>SYSTEM STATUS</strong><br>
+      Wait for Connection...
+  </div>
+
+  <div id="map"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="main.js"></script>
+  <script src="second.js"></script>
+  <script>
+    const client = new Paho.MQTT.Client(
+      "mr-connection-lg5b6n8iqv1.messaging.solace.cloud", // host only, no wss://
+      8443,                                                 // port for wss
+      "browserClient_" + Math.floor(Math.random() * 1000)  // client ID
+    );
+
+
+    function onConnect() {
+      console.log("Connected!");
+      client.subscribe("sam/ambulance/location/#", 1); // QoS 1
+      client.subscribe("sam/city/traffic/volume/#", 1); // QoS 1
+      client.subscribe("sam/ambulance/location/#", 1); // QoS 1
+      // client.subscribe("sam/#", { qos: 1 });
+      console.log("test");
+    }
+
+    function onMessageArrived(message) {
+      console.log("Event:", message.destinationName, message.payloadString);
+    }
+
+    const options = {
+      timeout: 10,
+      userName: "solace-cloud-client",
+      password: "19rrc4pgo5l4crclcf54abhp70",
+      useSSL: true,
+      onSuccess: onConnect,
+      onFailure: (err) => console.error("Connection failed:", err)
+    };
+
+    client.onMessageArrived = onMessageArrived;
+    client.connect(options);
+  </script>
+
+</body>
+</html>
